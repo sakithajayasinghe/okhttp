@@ -67,13 +67,8 @@ jobs:
           path: okhttp-tests/target/surefire-reports
 
 
-  pair:
+  probe:
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        before: [doublePushPromise, clientPingsServer, serverCreatesStreamAndClientReplies]
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
@@ -81,16 +76,47 @@ jobs:
           distribution: temurin
           java-version: "8"
           cache: maven
-      - name: Run ${{ matrix.before }} then pushPromiseStream
-        run: >
-          mvn -B -pl okhttp-tests -am test
-          -Dtest=SpdyConnectionTest#${{ matrix.before }}+pushPromiseStream
-          -DfailIfNoTests=false
-          -Dcheckstyle.skip=true -Danimal.sniffer.skip=true
-      - name: Keep the test reports
+
+      - name: Try four ways of selecting tests
+        run: |
+          try() {
+            echo "=== $1"
+            mvn -B -pl okhttp-tests -am test "-Dtest=$1" -DfailIfNoTests=false \
+              -Dcheckstyle.skip=true -Danimal.sniffer.skip=true > out.txt 2>&1 || true
+            grep -E 'Tests run: [0-9]+' out.txt | tail -1
+          }
+          try 'SpdyConnectionTest#doublePushPromise'
+          try 'SpdyConnectionTest#doublePushPromise+pushPromiseStream'
+          try 'SpdyConnectionTest#doublePushPromise,SpdyConnectionTest#pushPromiseStream'
+          try 'SpdyConnectionTest#*ushPromise*'
+
+      - name: Try the direct launcher
         if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: pair-${{ matrix.before }}-${{ matrix.attempt }}
-          path: okhttp-tests/target/surefire-reports
+        run: |
+          mvn -B -q -pl okhttp-tests -am install -DskipTests \
+            -Dcheckstyle.skip=true -Danimal.sniffer.skip=true -Dmaven.javadoc.skip=true
+          mvn -B -q -pl okhttp-tests dependency:build-classpath -Dmdep.outputFile="$PWD/cp.txt"
+          mkdir -p launcher
+          cat > launcher/Seq4.java <<'EOF'
+          import org.junit.runner.*;
+          public class Seq4 {
+            public static void main(String[] args) throws Exception {
+              JUnitCore core = new JUnitCore(); int failed = 0;
+              for (String a : args) {
+                String[] p = a.split("#");
+                Result r = core.run(Request.method(Class.forName(p[0]), p[1]));
+                System.out.printf("RESULT %s run=%d failed=%d ms=%d%n", a, r.getRunCount(), r.getFailureCount(), r.getRunTime());
+                failed += r.getFailureCount();
+              }
+              System.exit(failed == 0 ? 0 : 1);
+            }
+          }
+          EOF
+          javac -cp "$(cat cp.txt)" -d launcher launcher/Seq4.java
+          C=com.squareup.okhttp.internal.spdy.SpdyConnectionTest
+          for i in 1 2 3 4 5; do
+            echo "--- launcher attempt $i"
+            java -cp "launcher:okhttp-tests/target/test-classes:$(cat cp.txt)" Seq4 \
+              "$C#doublePushPromise" "$C#pushPromiseStream" || true
+          done
 
