@@ -65,4 +65,32 @@ jobs:
         with:
           name: alone-reports-${{ matrix.attempt }}
           path: okhttp-tests/target/surefire-reports
-            
+
+
+  pair:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        before: [doublePushPromise, clientPingsServer, serverCreatesStreamAndClientReplies]
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+      - name: Run ${{ matrix.before }} then pushPromiseStream
+        run: >
+          mvn -B -pl okhttp-tests -am test
+          -Dtest=SpdyConnectionTest#${{ matrix.before }}+pushPromiseStream
+          -DfailIfNoTests=false
+          -Dcheckstyle.skip=true -Danimal.sniffer.skip=true
+      - name: Keep the test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pair-${{ matrix.before }}-${{ matrix.attempt }}
+          path: okhttp-tests/target/surefire-reports
+
