@@ -1,0 +1,48 @@
+name: exp-busy-processor
+on:
+  push:
+    branches: ["exp/busy-processor"]
+
+jobs:
+  launcher:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [alone, alone-one-core, alone-busy]
+        attempt: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+      - name: Build and prepare the launcher
+        run: |
+          mvn -B -q -pl okhttp-tests -am install -DskipTests \
+            -Dcheckstyle.skip=true -Danimal.sniffer.skip=true -Dmaven.javadoc.skip=true
+          mvn -B -q -pl okhttp-tests dependency:build-classpath -Dmdep.outputFile="$PWD/cp.txt"
+          mkdir -p launcher
+          javac -cp "$(cat cp.txt)" -d launcher tools/Seq4.java
+      - name: Run the experiment 30 times
+        run: |
+          C=com.squareup.okhttp.internal.spdy.SpdyConnectionTest
+          # alone:          the test in a fresh process, nothing else changed
+          # alone-one-core: the same, but the process may use only one processor core
+          # alone-busy:     the same, with eight busy loops competing for the processor
+          PRE=""
+          case "${{ matrix.variant }}" in
+            alone-one-core) PRE="taskset -c 0" ;;
+            alone-busy)
+              trap 'kill $(jobs -p) 2>/dev/null' EXIT
+              for n in 1 2 3 4 5 6 7 8; do (while :; do :; done) & done ;;
+          esac
+          fails=0
+          for i in $(seq 1 30); do
+            $PRE java -cp "launcher:okhttp-tests/target/test-classes:$(cat cp.txt)" Seq4 "$C#pushPromiseStream" > run.txt || true
+            cat run.txt
+            if tail -1 run.txt | grep -q 'failed=1'; then fails=$((fails+1)); fi
+          done
+          echo "${{ matrix.variant }} (job ${{ matrix.attempt }}): pushPromiseStream failed $fails of 30" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
