@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [alone, after-doublePushPromise, after-clientPingsServer, twice]
+        variant: [alone, alone-one-core, alone-busy]
         attempt: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
@@ -62,15 +62,19 @@ jobs:
       - name: Run the experiment 30 times
         run: |
           C=com.squareup.okhttp.internal.spdy.SpdyConnectionTest
+          # alone:          the test in a fresh process, nothing else changed
+          # alone-one-core: the same, but the process may use only one processor core
+          # alone-busy:     the same, with eight busy loops competing for the processor
+          PRE=""
           case "${{ matrix.variant }}" in
-            alone)                   TESTS="$C#pushPromiseStream" ;;
-            after-doublePushPromise) TESTS="$C#doublePushPromise $C#pushPromiseStream" ;;
-            after-clientPingsServer) TESTS="$C#clientPingsServer $C#pushPromiseStream" ;;
-            twice)                   TESTS="$C#pushPromiseStream $C#pushPromiseStream" ;;
+            alone-one-core) PRE="taskset -c 0" ;;
+            alone-busy)
+              trap 'kill $(jobs -p) 2>/dev/null' EXIT
+              for n in 1 2 3 4 5 6 7 8; do (while :; do :; done) & done ;;
           esac
           fails=0
           for i in $(seq 1 30); do
-            java -cp "launcher:okhttp-tests/target/test-classes:$(cat cp.txt)" Seq4 $TESTS > run.txt || true
+            $PRE java -cp "launcher:okhttp-tests/target/test-classes:$(cat cp.txt)" Seq4 "$C#pushPromiseStream" > run.txt || true
             cat run.txt
             if tail -1 run.txt | grep -q 'failed=1'; then fails=$((fails+1)); fi
           done
