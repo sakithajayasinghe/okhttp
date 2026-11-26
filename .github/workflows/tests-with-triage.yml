@@ -1,0 +1,83 @@
+name: tests-with-triage
+
+# Runs SpdyConnectionTest like a normal pipeline. When tests fail, FlakyTriage
+# runs on the same machine, chooses experiments for each failed test, and
+# decides whether it is flaky (job stays green, with a warning) or a genuine
+# failure (job turns red). The "seeded" jobs apply a deliberate bug so there is
+# always a genuine failure to compare with.
+
+on:
+  push:
+    branches: ["exp/triage"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.code }} code, job ${{ matrix.attempt }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        code: [original, seeded]
+        attempt: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Get FlakyTriage
+        uses: actions/checkout@v5
+        with:
+          repository: sakithajayasinghe/flakytriage
+          ref: ci-integration
+          token: ${{ secrets.FLAKYTRIAGE_TOKEN }}
+          path: .flakytriage
+
+      - name: Plant the deliberate bug
+        if: matrix.code == 'seeded'
+        run: patch -p1 < .flakytriage/seeds/okhttp-wrong-ping-reply.patch
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: maven
+
+      - name: Build
+        run: >
+          mvn -B -q -pl okhttp-tests -am install -DskipTests
+          -Dcheckstyle.skip=true -Danimal.sniffer.skip=true -Dmaven.javadoc.skip=true
+
+      - name: Run tests
+        id: tests
+        continue-on-error: true
+        run: >
+          mvn -B -pl okhttp-tests surefire:test -Dtest=SpdyConnectionTest -DfailIfNoTests=false
+          -Dcheckstyle.skip=true -Danimal.sniffer.skip=true
+
+      - name: All tests passed
+        if: steps.tests.outcome == 'success'
+        run: echo "### All tests passed, nothing to triage" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-python@v6
+        if: steps.tests.outcome == 'failure'
+        with:
+          python-version: "3.11"
+
+      - name: Triage the failures
+        if: steps.tests.outcome == 'failure'
+        run: |
+          pip install --quiet ./.flakytriage
+          flakytriage --runner local --source . --work-dir .flakytriage-work \
+            triage --project .flakytriage/projects/okhttp.json \
+            --report okhttp-tests/target/surefire-reports/TEST-com.squareup.okhttp.internal.spdy.SpdyConnectionTest.xml \
+            --budget 120 --out triage-runs \
+            --summary "$GITHUB_STEP_SUMMARY" --github --fail-on-genuine
+
+      - name: Keep the reports and triage records
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ matrix.code }}-${{ matrix.attempt }}
+          path: |
+            okhttp-tests/target/surefire-reports
+            triage-runs
+          if-no-files-found: ignore
