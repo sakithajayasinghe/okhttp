@@ -28,7 +28,7 @@ jobs:
         with:
           repository: sakithajayasinghe/flakytriage
           ref: ci-integration
-          token: ${{ secrets.FLAKYTRIAGE_TOKEN }}
+          ssh-key: ${{ secrets.FLAKYTRIAGE_DEPLOY_KEY }}
           path: .flakytriage
 
       - name: Plant the deliberate bug
